@@ -1,0 +1,13 @@
+[workspace]
+members = ["crates/hinoko-core", "crates/hinoko"]
+resolver = "2"
+
+[workspace.package]
+version = "0.13.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4

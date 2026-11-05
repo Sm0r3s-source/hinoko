@@ -1,0 +1,28 @@
+[package]
+name = "hinoko-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Engine for Hinoko: bots, memory, tools, model backends."
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync", "process", "io-util", "fs"] }
+url = "2"
+dirs = "6"
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
+similar = "2"
+regex = "1"
+sha2 = "0.10"
+mistralrs = { version = "0.8.1", optional = true }
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio", "json"] }
+tokio-stream = { version = "0.1", optional = true }
+
+[features]
+# The built-in model engine (mistral.rs, in this process). Off = llama.cpp runner only.
+builtin = ["dep:mistralrs", "dep:axum", "dep:tokio-stream"]

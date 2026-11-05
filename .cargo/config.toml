@@ -1,0 +1,7 @@
+# The built-in engine (candle) only uses its fast CPU kernels when these features are enabled
+# at compile time. Without them it silently falls back to slow scalar code.
+# Needs a CPU from ~2013 or newer (AVX2). Remove these lines to build for very old CPUs.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+avx2,+fma,+f16c"]
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+avx2,+fma,+f16c"]
