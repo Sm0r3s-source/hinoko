@@ -87,6 +87,11 @@ pub struct Provider {
     /// Id of another provider to switch to when this one is down, rate-limited or out of quota.
     #[serde(default)]
     pub backup: String,
+    /// Dollars per million tokens (prompt / answer), for the cost estimate in Settings → Usage.
+    #[serde(default)]
+    pub price_in: f64,
+    #[serde(default)]
+    pub price_out: f64,
 }
 
 fn yes() -> bool {
@@ -113,6 +118,8 @@ impl Provider {
             temperature: None,
             top_p: None,
             backup: String::new(),
+            price_in: 0.0,
+            price_out: 0.0,
         }
     }
 
@@ -596,6 +603,9 @@ impl Paths {
     }
     pub fn state(&self) -> PathBuf {
         self.home.join("state.json")
+    }
+    pub fn usage(&self) -> PathBuf {
+        self.home.join("usage.json")
     }
     pub fn settings(&self) -> PathBuf {
         self.home.join("settings.json")

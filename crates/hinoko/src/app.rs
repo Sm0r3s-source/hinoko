@@ -2758,6 +2758,14 @@ impl HinokoApp {
                 self.update_section(ui, &mut s.auto_update_check);
 
                 ui.separator();
+                ui.label(RichText::new("Usage").size(16.0).strong());
+                self.usage_section(ui, &s);
+
+                ui.separator();
+                ui.label(RichText::new("Skills").size(16.0).strong());
+                self.skills_section(ui);
+
+                ui.separator();
                 ui.label(RichText::new("Bots: attention").size(16.0).strong());
                 ui.checkbox(&mut s.quiet_routines, "Quiet routines")
                     .on_hover_text("A routine that finds nothing leaves one muted line instead of a message. Bots speak when there is something new or you must act.");
@@ -2980,10 +2988,70 @@ impl HinokoApp {
                 }
             }).response.on_hover_text("Used automatically if this model is down, rate-limited or out of quota");
             ui.end_row();
+            ui.label("Price per 1M tokens");
+            ui.horizontal(|ui| {
+                ui.label("in $");
+                ui.add(egui::DragValue::new(&mut ed.provider.price_in).range(0.0..=1000.0).speed(0.05));
+                ui.label("out $");
+                ui.add(egui::DragValue::new(&mut ed.provider.price_out).range(0.0..=1000.0).speed(0.05));
+            }).response.on_hover_text("Optional. Used for the cost estimate in Settings → Usage. Leave 0 for free or local models.");
+            ui.end_row();
         });
         if ed.provider.kind == Kind::Cli {
             ui.colored_label(ember(), "A CLI agent runs with its own tools and your account's permissions, outside Hinoko's sandbox.");
         }
+    }
+
+    fn usage_section(&mut self, ui: &mut egui::Ui, s: &hinoko_core::settings::Settings) {
+        use hinoko_core::usage;
+        let rows = usage::all();
+        ui.label(RichText::new("Counted on this computer. Tokens are the server's numbers when it reports them, otherwise an estimate; command-line agents are estimated.").color(muted()).small());
+        for (label, n) in [("Today", 1), ("7 days", 7), ("30 days", 30)] {
+            let from = usage::since(n);
+            let mut by: std::collections::BTreeMap<String, usage::Row> = Default::default();
+            for (day, pid, model, r) in rows.iter().filter(|r| r.0 >= from) {
+                let _ = day;
+                by.entry(format!("{pid}\u{1}{model}")).or_default().add(r);
+            }
+            let mut total = usage::Row::default();
+            let mut dollars = 0.0;
+            for (k, r) in &by {
+                let pid = k.split('\u{1}').next().unwrap_or("");
+                let (pi, po) = s.provider(pid).map(|p| (p.price_in, p.price_out)).unwrap_or((0.0, 0.0));
+                dollars += usage::cost(r, pi, po);
+                total.add(r);
+            }
+            egui::CollapsingHeader::new(format!("{label}: {} calls, {} in, {} out, about ${dollars:.2}", total.calls, total.prompt, total.completion)).id_salt(("usage", n)).show(ui, |ui| {
+                if by.is_empty() {
+                    ui.label(RichText::new("Nothing yet.").color(muted()));
+                }
+                for (k, r) in &by {
+                    let (pid, model) = k.split_once('\u{1}').unwrap_or(("", k));
+                    let (pi, po) = s.provider(pid).map(|p| (p.price_in, p.price_out)).unwrap_or((0.0, 0.0));
+                    ui.label(format!("{model}: {} calls, {} in ({} cached), {} out, ${:.3}", r.calls, r.prompt, r.cached, r.completion, usage::cost(r, pi, po)));
+                }
+            });
+        }
+        ui.label(RichText::new("Set each model's price in its settings (Price per 1M tokens) to see dollars.").color(muted()).small());
+    }
+
+    fn skills_section(&mut self, ui: &mut egui::Ui) {
+        let dir = self.engine.home().join("skills");
+        ui.label(RichText::new("A skill is a folder with a SKILL.md (name and description, then instructions). The model sees only the list and loads one when a task matches. Code tab only. Also reads .claude/skills and .hinoko/skills inside a project.").color(muted()).small());
+        let found = hinoko_core::skills::find(None, self.engine.home());
+        if found.is_empty() {
+            ui.label(RichText::new("No skills yet.").color(muted()));
+        }
+        for sk in &found {
+            ui.label(format!("{}: {}", sk.name, sk.description));
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Open skills folder").clicked() {
+                let _ = std::fs::create_dir_all(&dir);
+                ui.ctx().open_url(egui::OpenUrl::new_tab(format!("file://{}", dir.display())));
+            }
+            ui.label(RichText::new(dir.display().to_string()).color(muted()).small());
+        });
     }
 
     fn update_state(&self) -> hinoko_core::update::Update {

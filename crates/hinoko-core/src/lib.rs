@@ -13,8 +13,10 @@ pub mod model;
 pub mod prompts;
 pub mod settings;
 pub mod ssh;
+pub mod skills;
 pub mod trace;
 pub mod update;
+pub mod usage;
 pub mod web;
 
 pub use engine::{Attach, ChatOpts, Engine};

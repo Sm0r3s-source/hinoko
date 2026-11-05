@@ -171,6 +171,7 @@ impl Engine {
             .user_agent("Hinoko/0.3")
             .build()
             .map_err(|e| e.to_string())?;
+        crate::usage::load(&paths.usage());
         let web = web::client(settings.web_allow_proxy).map_err(|e| e.to_string())?;
         Ok(Self {
             store: Arc::new(Mutex::new(store)),
@@ -204,6 +205,7 @@ impl Engine {
 
     pub fn save(&self) {
         self.store().save(&self.paths.state());
+        crate::usage::save(&self.paths.usage());
         (self.repaint)();
     }
 

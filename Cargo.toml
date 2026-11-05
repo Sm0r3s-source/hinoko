@@ -3,7 +3,7 @@ members = ["crates/hinoko-core", "crates/hinoko"]
 resolver = "2"
 
 [workspace.package]
-version = "0.14.0"
+version = "0.15.1"
 edition = "2021"
 license = "MIT"
 

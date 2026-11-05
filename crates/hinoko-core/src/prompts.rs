@@ -9,7 +9,7 @@ const CHAT: &str = include_str!("../../../assets/default-system-prompt.md");
 const CUTOFF: &str = "unknown (it depends on the model; search the web for anything recent)";
 
 /// Sections kept for small local models, whose context window is short.
-const SHORT: &[&str] = &["Identity & Personality", "System Security - CRITICAL", "Communication Style", "Support"];
+const SHORT: &[&str] = &["Identity", "How to answer", "Support"];
 
 /// The system prompt for a plain chat. `local` keeps only the core sections so a
 /// small model has room left for the conversation. `web` says whether this message
@@ -62,7 +62,7 @@ mod tests {
     fn local_prompt_is_much_shorter() {
         let (full, short) = (chat(false, false), chat(true, false));
         assert!(short.len() * 3 < full.len(), "{} vs {}", short.len(), full.len());
-        assert!(short.contains("Communication Style") && !short.contains("Copyright"));
+        assert!(short.contains("How to answer") && !short.contains("Copyright"));
     }
 
     #[test]

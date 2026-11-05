@@ -37,6 +37,12 @@ fn fail(message: impl Into<String>, retry_plain: bool) -> LlmError {
     LlmError { retry_plain, message: message.into() }
 }
 
+/// Counts a finished call: the server's numbers when given, otherwise a size estimate.
+fn meter(p: &Provider, messages: &[Value], usage: Option<(u64, u64, u64)>, out_chars: usize) {
+    let (i, o, c) = usage.unwrap_or_else(|| (estimate_tokens(messages.iter().map(|m| m.to_string().len()).sum()), estimate_tokens(out_chars), 0));
+    crate::usage::record(&p.id, &p.model, i, o, c);
+}
+
 pub fn parse_completion(body: &str) -> Result<Completion, String> {
     let v: Value = serde_json::from_str(body).map_err(|_| "the model returned an unreadable answer".to_string())?;
     let msg = &v["choices"][0]["message"];
@@ -87,6 +93,7 @@ pub async fn complete(
         Kind::Cli => {
             let prompt = render_prompt(&to_prompted(messages, tools));
             let text = run_cli(p, &prompt).await?;
+            meter(p, messages, None, text.len());
             Ok(from_prompted(&text))
         }
     }
@@ -175,6 +182,8 @@ async fn openai(
         return Err(fail(failure_text(status.as_u16(), &snippet), retry));
     }
     let mut c = parse_completion(&body).map_err(|m| fail(m, tools.is_some()))?;
+    let usage = serde_json::from_str::<Value>(&body).ok().and_then(|v| crate::usage::read(&v["usage"]));
+    meter(p, messages, usage, c.content.len() + c.tool_calls.iter().map(|t| t.arguments.len()).sum::<usize>());
     // Some servers hand a model's own tool-call text back as plain content
     // (the chat template had no tool support). Read it so the call still runs.
     if tools.is_some() && c.tool_calls.is_empty() && c.content.contains("<tool_call>") {
@@ -305,6 +314,7 @@ pub async fn stream(
     }
     if p.kind == Kind::Cli {
         let text = run_cli(p, &render_prompt(messages)).await?;
+        meter(p, messages, None, text.len());
         on_delta(Piece::Text(&text));
         return Ok(text);
     }
@@ -322,6 +332,9 @@ pub async fn stream(
         }
         for (k, v) in extra {
             payload[*k] = v.clone();
+        }
+        if attempt == 0 {
+            payload["stream_options"] = json!({"include_usage": true}); // dropped if the server rejects the request
         }
         let r = post_retry(http, p, &url, &payload).await?;
         let status = r.status();
@@ -341,6 +354,7 @@ pub async fn stream(
     let mut thought = false;
     let mut think_chars = 0usize;
     let mut reported: Option<u64> = None;
+    let mut full_usage: Option<(u64, u64, u64)> = None;
     let mut pending = String::new();
     let (mut think_text, mut checked_text, mut checked_think) = (String::new(), 0usize, 0usize);
     'outer: loop {
@@ -353,6 +367,11 @@ pub async fn stream(
         pending.push_str(&String::from_utf8_lossy(&bytes));
         while let Some(nl) = pending.find('\n') {
             let line: String = pending.drain(..=nl).collect();
+            if line.contains("\"prompt_tokens\"") {
+                if let Some(u) = line.trim().strip_prefix("data:").and_then(|d| serde_json::from_str::<Value>(d.trim()).ok()).and_then(|v| crate::usage::read(&v["usage"])) {
+                    full_usage = Some(u);
+                }
+            }
             match parse_sse_line(&line) {
                 Sse::Delta(t) => {
                     full.push_str(&t);
@@ -398,6 +417,7 @@ pub async fn stream(
             false,
         ));
     }
+    meter(p, messages, full_usage, full.len() + think_chars);
     match reported {
         Some(n) => on_delta(Piece::Usage(n, false)),
         None => on_delta(Piece::Usage(estimate_tokens(full.len() + think_chars), true)),
