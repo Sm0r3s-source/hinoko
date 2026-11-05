@@ -20,8 +20,8 @@ fn icon() -> eframe::egui::IconData {
             }
             let c = match app::STAR[y / 4].as_bytes()[x / 4] {
                 b'w' => [255, 255, 255],
-                b'b' => [0xb4, 0xbc, 0xf0],
-                b'c' => [0xe6, 0xe9, 0xff],
+                b'b' => [236, 236, 236],
+                b'c' => [250, 250, 250],
                 _ => [0x0e, 0x12, 0x30],
             };
             let i = (y * n + x) * 4;

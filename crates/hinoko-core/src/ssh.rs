@@ -80,12 +80,11 @@ pub async fn run(m: &Machine, key: &Path, known_hosts: &Path, command: &str, tim
     if let Some(dir) = known_hosts.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let child = Command::new("ssh")
-        .args(args(m, key, known_hosts, command))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
+    let mut cmd = Command::new("ssh");
+    cmd.args(args(m, key, known_hosts, command)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // no console window
+    let child = cmd
         .spawn()
         .map_err(|e| format!("could not start ssh ({e}). Install the OpenSSH client."))?;
     let out = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
@@ -112,10 +111,11 @@ pub async fn ensure_key(key: &Path) -> Result<String, String> {
         if let Some(dir) = key.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        let out = Command::new("ssh-keygen")
-            .args(["-t", "ed25519", "-N", "", "-C", "hinoko", "-f"])
-            .arg(key)
-            .stdin(Stdio::null())
+        let mut keygen = Command::new("ssh-keygen");
+        keygen.args(["-t", "ed25519", "-N", "", "-C", "hinoko", "-f"]).arg(key).stdin(Stdio::null());
+        #[cfg(windows)]
+        keygen.creation_flags(0x0800_0000); // no console window
+        let out = keygen
             .output()
             .await
             .map_err(|e| format!("could not run ssh-keygen ({e}). Install the OpenSSH client."))?;

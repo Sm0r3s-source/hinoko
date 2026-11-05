@@ -151,6 +151,16 @@ async fn openai(
     if let Some(tp) = p.top_p {
         payload["top_p"] = json!(clean_f32(tp));
     }
+    if p.id == crate::local::PROVIDER_ID {
+        payload["cache_prompt"] = json!(true); // llama.cpp: skip re-reading the unchanged start of the prompt
+    }
+    if p.base_url.contains("openrouter.ai") && p.model.starts_with("anthropic/") {
+        // Claude only caches what is marked: the tools and system prompt up to this point
+        if let Some(m) = payload["messages"].get_mut(0).filter(|m| m["role"] == "system") {
+            let text = m["content"].as_str().unwrap_or("").to_string();
+            m["content"] = json!([{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]);
+        }
+    }
     if let Some(t) = tools {
         payload["tools"] = Value::Array(t.to_vec());
         payload["tool_choice"] = json!("auto");
@@ -561,7 +571,7 @@ pub fn render_prompt(messages: &[Value]) -> String {
 
 async fn run_cli(p: &Provider, prompt: &str) -> Result<String, LlmError> {
     let in_arg = p.args.iter().any(|a| a.contains("{prompt}"));
-    let args: Vec<String> = p.args.iter().map(|a| a.replace("{prompt}", prompt)).collect();
+    let args: Vec<String> = crate::settings::cli_model_args(&p.command, &p.model).into_iter().chain(p.args.iter().map(|a| a.replace("{prompt}", prompt))).collect();
     let work = std::env::temp_dir().join("hinoko-cli");
     let _ = std::fs::create_dir_all(&work);
 
@@ -583,6 +593,8 @@ async fn run_cli(p: &Provider, prompt: &str) -> Result<String, LlmError> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // no console window
     let mut child = cmd.spawn().map_err(|e| fail(format!("could not start `{}`: {e}", p.command.trim()), false))?;
     if !in_arg {
         if let Some(mut stdin) = child.stdin.take() {

@@ -298,18 +298,24 @@ fn card<R>(ui: &mut egui::Ui, fill: Color32, border: Option<(f32, Color32)>, mar
     inner
 }
 
-/// A small pixel sprite from rows of characters; '.' is clear, others look up `pal`.
-fn sprite(ui: &mut egui::Ui, rows: &[&str], pal: &[(char, Color32)], px: f32) -> egui::Response {
-    let w = rows.iter().map(|r| r.chars().count()).max().unwrap_or(0) as f32 * px;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, rows.len() as f32 * px), egui::Sense::hover());
+/// Paints a pixel sprite from rows of characters ('.' is clear, others look up `pal`) with each pixel
+/// a whole number of screen pixels, so it stays crisp at any display scale.
+fn paint_sprite(ui: &egui::Ui, at: egui::Pos2, rows: &[&str], pal: &[(char, Color32)], px: f32) {
+    let k = ui.ctx().pixels_per_point();
+    let (px, at) = ((px * k).round().max(1.0) / k, ((at.to_vec2() * k).round() / k).to_pos2());
     for (y, row) in rows.iter().enumerate() {
         for (x, ch) in row.chars().enumerate() {
             if let Some((_, c)) = pal.iter().find(|(k, _)| *k == ch) {
-                let min = rect.min + egui::vec2(x as f32 * px, y as f32 * px);
-                ui.painter().rect_filled(egui::Rect::from_min_size(min, egui::vec2(px, px)), 0.0, *c);
+                ui.painter().rect_filled(egui::Rect::from_min_size(at + egui::vec2(x as f32 * px, y as f32 * px), egui::vec2(px, px)), 0.0, *c);
             }
         }
     }
+}
+
+fn sprite(ui: &mut egui::Ui, rows: &[&str], pal: &[(char, Color32)], px: f32) -> egui::Response {
+    let w = rows.iter().map(|r| r.chars().count()).max().unwrap_or(0) as f32 * px;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, rows.len() as f32 * px), egui::Sense::hover());
+    paint_sprite(ui, rect.min, rows, pal, px);
     resp
 }
 
@@ -342,12 +348,13 @@ pub const STAR: [&str; 16] = [
     "..bbbwwcwcwww...", ".....bwcwcw.....", "......bwww......", "....w..bw....w..", "..w.b..bw....b..", "..b.....b.w.....", "..........c.....", "................",
 ];
 
+const STAR_PAL: [(char, Color32); 3] = [('w', Color32::WHITE), ('b', Color32::from_gray(236)), ('c', Color32::from_gray(250))];
+
 fn logo(ui: &mut egui::Ui, px: f32) {
     if SAKURA_ON.load(std::sync::atomic::Ordering::Relaxed) {
         return sakura_sprite(ui);
     }
-    let t = ember();
-    sprite(ui, &STAR, &[('w', Color32::WHITE), ('b', mix(t, Color32::WHITE, 0.55)), ('c', mix(t, Color32::WHITE, 0.85))], px);
+    sprite(ui, &STAR, &STAR_PAL, px);
 }
 
 pub fn apply_appearance(ctx: &egui::Context, look: &Appearance) {
@@ -644,17 +651,10 @@ impl HinokoApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
         }
         let painter = ui.painter();
-        // the mark: the Hinoko star on a navy tile
-        let m = egui::Rect::from_min_size(rect.left_center() + egui::vec2(14.0, -9.0), egui::vec2(18.0, 18.0));
-        painter.rect_filled(m, 5.0, Color32::from_rgb(0x0e, 0x12, 0x30));
-        let c = m.width() / 16.0;
-        for (y, row) in STAR.iter().enumerate() {
-            for (x, k) in row.bytes().enumerate() {
-                let col = match k { b'w' => Color32::WHITE, b'b' => Color32::from_rgb(0xb4, 0xbc, 0xf0), b'c' => Color32::from_rgb(0xe6, 0xe9, 0xff), _ => continue };
-                painter.rect_filled(egui::Rect::from_min_size(m.min + egui::vec2(x as f32 * c, y as f32 * c), egui::vec2(c, c)), 0.0, col);
-            }
-        }
-        painter.text(m.right_center() + egui::vec2(10.0, 0.0), egui::Align2::LEFT_CENTER, "Hinoko", egui::FontId::proportional(15.0), egui::Color32::from_rgb(0xf3, 0xe9, 0xec));
+        // the mark: the Hinoko star
+        let m = rect.left_center() + egui::vec2(10.0, -16.0);
+        paint_sprite(ui, m, &STAR, &STAR_PAL, 2.0);
+        painter.text(egui::pos2(m.x + 40.0, rect.center().y), egui::Align2::LEFT_CENTER, "Hinoko", egui::FontId::proportional(15.0), egui::Color32::from_rgb(0xf3, 0xe9, 0xec));
         // window buttons, right to left: close, maximise, minimise
         let bw = 44.0;
         let mut x = rect.right();
@@ -1181,6 +1181,7 @@ impl HinokoApp {
                         changed |= ui.selectable_value(&mut s2.provider, Some(p.id.clone()), &p.name).changed();
                     }
                 });
+                self.cli_model_picker(ui, &id, s2.provider.as_deref());
                 if changed {
                     if let Some(c) = self.engine.store().code_mut(&id) {
                         c.provider = s2.provider;
@@ -1337,6 +1338,30 @@ impl HinokoApp {
     }
 
     // ---- centre: a plain chat ----
+    /// For command-line agents that take a model name (Claude Code): a Haiku / Sonnet / Opus menu.
+    fn cli_model_picker(&self, ui: &mut egui::Ui, salt: &str, provider: Option<&str>) {
+        let settings = self.engine.settings();
+        let Some(p) = settings.provider_for(provider).filter(|p| p.kind == Kind::Cli) else { return };
+        let list = hinoko_core::settings::cli_models(&p.command);
+        if list.is_empty() {
+            return;
+        }
+        let shown = list.iter().find(|(v, _)| *v == p.model).map_or(p.model.clone(), |(_, l)| l.to_string());
+        let mut pick = p.model.clone();
+        egui::ComboBox::from_id_salt(("cli-model", salt)).selected_text(shown).show_ui(ui, |ui| {
+            for (v, l) in list {
+                ui.selectable_value(&mut pick, v.to_string(), *l);
+            }
+        });
+        if pick != p.model {
+            let mut s = settings.clone();
+            if let Some(q) = s.providers.iter_mut().find(|q| q.id == p.id) {
+                q.model = pick;
+            }
+            self.engine.set_settings(s);
+        }
+    }
+
     fn chat_view(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.active_chat.clone() else {
             self.chat_welcome(ui);
@@ -1365,6 +1390,7 @@ impl HinokoApp {
                         ui.selectable_value(&mut pick, Some(p.id.clone()), &p.name);
                     }
                 });
+                self.cli_model_picker(ui, &id, chat.provider.as_deref());
                 if pick != chat.provider {
                     if let Some(c) = self.engine.store().chat_mut(&id) {
                         c.provider = pick;

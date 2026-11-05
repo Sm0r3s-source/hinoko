@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn versions_compare_by_number_not_by_text() {
-        assert!(newer("v0.14.0", "0.13.0") && newer("v0.13.1", "0.13.0") && newer("v1.0.0", "0.13.9"));
+        assert!(newer("v0.15.0", "0.14.0") && newer("v0.14.1", "0.14.0") && newer("v1.0.0", "0.13.9"));
         assert!(newer("v0.100.0", "0.13.0"), "100 is more than 13");
         assert!(!newer("v0.13.0", "0.13.0") && !newer("v0.12.9", "0.13.0"));
         assert!(!newer("v0.13", "0.13.0"), "a missing part counts as zero");

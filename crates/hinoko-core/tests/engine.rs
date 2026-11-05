@@ -1172,3 +1172,62 @@ async fn code_sessions_run_side_by_side() {
     assert!(t0.elapsed() < std::time::Duration::from_millis(780), "ran together, not one after the other: {:?}", t0.elapsed());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+fn tool_reply(name: &str, args: serde_json::Value) -> (&'static str, String) {
+    let r = serde_json::json!({"choices":[{"message":{"role":"assistant","content":"","tool_calls":[
+        {"id":"c1","type":"function","function":{"name":name,"arguments":args.to_string()}}]}}]});
+    ("application/json", r.to_string())
+}
+
+fn say(text: &str) -> (&'static str, String) {
+    ("application/json", serde_json::json!({"choices":[{"message":{"role":"assistant","content":text}}]}).to_string())
+}
+
+async fn code_finish(e: &Engine, id: &str) {
+    for _ in 0..300 {
+        if !e.is_code_busy(id) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("the coding session never finished");
+}
+
+fn defer_probe(body: &str) -> (&'static str, String) {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    let has = v["tools"].as_array().is_some_and(|t| t.iter().any(|x| x["function"]["name"] == "web_search"));
+    let asked = v["messages"].as_array().is_some_and(|m| m.iter().any(|x| x["role"] == "tool"));
+    match (asked, has) {
+        (false, true) => say("FAIL: web_search was sent before anyone asked for it"),
+        (false, false) => tool_reply("tool_search", serde_json::json!({"query": "search the web"})),
+        (true, true) => say("OK"),
+        (true, false) => say("FAIL: web_search was not loaded"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rare_tools_are_held_back_until_the_model_asks_for_them() {
+    let base = serve(defer_probe).await;
+    let (e, dir) = api_engine("defer", &base);
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let id = e.code_new(proj.to_str().unwrap()).unwrap();
+    e.code_send(&id, "look something up").unwrap();
+    code_finish(&e, &id).await;
+    assert_eq!(e.store().code_session(&id).unwrap().messages.last().unwrap().text, "OK");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_model_stuck_repeating_the_same_call_is_stopped() {
+    let base = serve(|_| tool_reply("list_dir", serde_json::json!({"path": "."}))).await;
+    let (e, dir) = api_engine("stuck", &base);
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let id = e.code_new(proj.to_str().unwrap()).unwrap();
+    e.code_send(&id, "keep looking").unwrap();
+    code_finish(&e, &id).await;
+    let last = e.store().code_session(&id).unwrap().messages.last().unwrap().text.clone();
+    assert!(last.contains("kept repeating itself"), "{last}");
+    let _ = std::fs::remove_dir_all(dir);
+}

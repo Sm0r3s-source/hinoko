@@ -952,6 +952,7 @@ impl Engine {
         let mut used_tools = false;
         let mut with_tools = true;
         let mut last_said = String::new();
+        let mut guard = crate::lean::LoopGuard::default();
 
         for step in 0..max_steps {
             let allow_tools = with_tools && step + 1 < max_steps;
@@ -1012,11 +1013,19 @@ impl Engine {
                 if effect.approval {
                     opened = true;
                 }
+                let mut result = crate::lean::squeeze(&call.name, &effect.result);
+                if let Some(nudge) = guard.note(&call.name, &call.arguments, &result) {
+                    result.push_str(&nudge);
+                }
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call.id,
-                    "content": wrap(&call.name, &effect.result),
+                    "content": wrap(&call.name, &result),
                 }));
+            }
+            if guard.stuck() {
+                self.say(bot_id, "I stopped because I kept repeating the same step. Tell me what to try instead.", if opened { "waiting" } else { "idle" });
+                return;
             }
         }
         presence(&mut self.store(), bot_id, if opened { "waiting" } else { "done" });

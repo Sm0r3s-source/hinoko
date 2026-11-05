@@ -199,6 +199,20 @@ pub struct Appearance {
     pub pixel_font: bool,
 }
 
+/// Models a command-line agent can be told to use (for the model menu). Claude Code takes aliases.
+pub fn cli_models(command: &str) -> &'static [(&'static str, &'static str)] {
+    let name = command.trim().rsplit(['/', '\\']).next().unwrap_or("").to_lowercase();
+    match name.trim_end_matches(".exe").trim_end_matches(".cmd") {
+        "claude" => &[("", "Default"), ("haiku", "Haiku"), ("sonnet", "Sonnet"), ("opus", "Opus")],
+        _ => &[],
+    }
+}
+
+/// Arguments that select `model` for an agent that has a model menu; none when it is "Default".
+pub fn cli_model_args(command: &str, model: &str) -> Vec<String> {
+    if model.trim().is_empty() || cli_models(command).is_empty() { vec![] } else { vec!["--model".into(), model.trim().into()] }
+}
+
 pub const THEMES: &[(&str, &str)] = &[
     ("astral", "Astral (dark)"),
     ("pixel-astral", "Pixel Astral"),
@@ -660,6 +674,15 @@ mod tests {
         assert_eq!(s.provider_for(None).unwrap().id, ia);
         assert_eq!(s.provider_for(Some(&ib)).unwrap().id, ib);
         assert_eq!(s.provider_for(Some("gone")).unwrap().id, ia);
+    }
+
+    #[test]
+    fn claude_cli_gets_a_model_menu_and_other_agents_are_left_alone() {
+        let names: Vec<&str> = cli_models(r"C:\Users\me\.local\bin\claude.exe").iter().map(|m| m.1).collect();
+        assert_eq!(names, ["Default", "Haiku", "Sonnet", "Opus"]);
+        assert_eq!(cli_model_args("claude", "sonnet"), ["--model", "sonnet"]);
+        assert!(cli_model_args("claude", "").is_empty(), "Default adds nothing");
+        assert!(cli_models("codex").is_empty() && cli_model_args("codex", "gpt-x").is_empty());
     }
 
     #[test]

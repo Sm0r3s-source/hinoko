@@ -6,6 +6,7 @@ pub mod computer;
 pub mod embedded;
 pub mod engine;
 pub mod git;
+pub mod lean;
 pub mod llm;
 pub mod local;
 pub mod model;

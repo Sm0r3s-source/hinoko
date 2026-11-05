@@ -1,7 +1,7 @@
 ; Inno Setup script -> Hinoko-Setup.exe (per-user install, no admin needed)
 #define AppVersion GetEnv("HINOKO_VERSION")
 #if AppVersion == ""
-  #define AppVersion "0.13.0"
+  #define AppVersion "0.14.0"
 #endif
 
 [Setup]
