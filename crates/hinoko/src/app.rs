@@ -215,6 +215,9 @@ pub struct HinokoApp {
     applied: String,
     theme_text: String,
     theme_msg: String,
+    skill_spec: String,
+    sidebar_open: bool,
+    skill_msg: Arc<Mutex<String>>,
     active: Option<String>,
     drafts: HashMap<String, String>,
     tab: Tab,
@@ -471,6 +474,9 @@ impl HinokoApp {
             look,
             theme_text: String::new(),
             theme_msg: String::new(),
+            skill_spec: String::new(),
+            sidebar_open: true,
+            skill_msg: Arc::new(Mutex::new(String::new())),
             active,
             drafts: HashMap::new(),
             tab: Tab::Files,
@@ -655,6 +661,21 @@ impl HinokoApp {
         let m = rect.left_center() + egui::vec2(10.0, -16.0);
         paint_sprite(ui, m, &STAR, &STAR_PAL, 2.0);
         painter.text(egui::pos2(m.x + 40.0, rect.center().y), egui::Align2::LEFT_CENTER, "Hinoko", egui::FontId::proportional(15.0), egui::Color32::from_rgb(0xf3, 0xe9, 0xec));
+        // show or hide the sidebar (Ctrl+B)
+        let sb = egui::Rect::from_center_size(egui::pos2(m.x + 112.0, rect.center().y), egui::vec2(30.0, 24.0));
+        let sr = ui.interact(sb, egui::Id::new("sidebar-toggle"), egui::Sense::click()).on_hover_text("Show or hide the sidebar (Ctrl+B)");
+        if sr.hovered() {
+            ui.painter().rect_filled(sb, 4.0, mix(panel(), egui::Color32::WHITE, 0.08));
+        }
+        let (ic, st) = (egui::Rect::from_center_size(sb.center(), egui::vec2(14.0, 11.0)), egui::Stroke::new(1.3, if sr.hovered() { egui::Color32::WHITE } else { muted() }));
+        ui.painter().rect_stroke(ic, 2.0, st, egui::StrokeKind::Middle);
+        ui.painter().line_segment([ic.left_top() + egui::vec2(5.0, 0.0), ic.left_bottom() + egui::vec2(5.0, 0.0)], st);
+        if self.sidebar_open {
+            ui.painter().rect_filled(egui::Rect::from_min_max(ic.left_top() + egui::vec2(1.0, 1.0), ic.left_bottom() + egui::vec2(4.5, -1.0)), 0.0, st.color);
+        }
+        if sr.clicked() {
+            self.sidebar_open = !self.sidebar_open;
+        }
         // window buttons, right to left: close, maximise, minimise
         let bw = 44.0;
         let mut x = rect.right();
@@ -3043,8 +3064,27 @@ impl HinokoApp {
             ui.label(RichText::new("No skills yet.").color(muted()));
         }
         for sk in &found {
-            ui.label(format!("{}: {}", sk.name, sk.description));
+            ui.horizontal(|ui| {
+                ui.label(format!("{}: {}", sk.name, sk.description));
+                if sk.file.starts_with(&dir) && ui.small_button("Remove").clicked() {
+                    hinoko_core::skills::remove(self.engine.home(), &sk.name);
+                }
+            });
         }
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.skill_spec).hint_text("owner/repo, owner/repo/folder or GitHub link").desired_width(320.0));
+            if ui.button("Install").clicked() && !self.skill_spec.trim().is_empty() {
+                let (e, msg, spec) = (self.engine.clone(), self.skill_msg.clone(), self.skill_spec.trim().to_string());
+                *msg.lock().unwrap() = "Installing…".into();
+                self._rt.spawn(async move {
+                    *msg.lock().unwrap() = match e.skill_install(&spec).await {
+                        Ok(n) => format!("Installed: {}", n.join(", ")),
+                        Err(err) => err,
+                    };
+                });
+            }
+        });
+        ui.label(RichText::new(self.skill_msg.lock().unwrap().clone()).color(muted()).small());
         ui.horizontal(|ui| {
             if ui.button("Open skills folder").clicked() {
                 let _ = std::fs::create_dir_all(&dir);
@@ -3144,7 +3184,12 @@ impl eframe::App for HinokoApp {
             .exact_size(36.0)
             .frame(egui::Frame::new().fill(mix(ink(), Color32::BLACK, 0.4)))
             .show(ui, |ui| self.titlebar(ui, maximized));
-        egui::Panel::left("roster").default_size(230.0).size_range(190.0..=380.0).resizable(true).frame(egui::Frame::new().fill(panel()).inner_margin(12.0)).show(ui, |ui| self.roster(ui));
+        if ctx0.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
+            self.sidebar_open = !self.sidebar_open;
+        }
+        if self.sidebar_open {
+            egui::Panel::left("roster").default_size(230.0).size_range(150.0..=560.0).resizable(true).frame(egui::Frame::new().fill(panel()).inner_margin(12.0)).show(ui, |ui| self.roster(ui));
+        }
         if self.mode == Mode::Bots && self.look.show_computer_panel {
             egui::Panel::right("desk").default_size(380.0).size_range(280.0..=640.0).frame(egui::Frame::new().fill(panel()).inner_margin(12.0)).show(ui, |ui| self.desk(ui));
         }

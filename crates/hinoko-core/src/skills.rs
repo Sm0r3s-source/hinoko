@@ -80,6 +80,94 @@ pub fn run(skills: &[Skill], name: &str) -> String {
     }
 }
 
+/// What to fetch: (owner, repo, ref, subfolder) from `owner/repo`, `owner/repo/sub/folder`
+/// or a GitHub URL (`.../tree/<branch>/<folder>`).
+pub fn parse_spec(spec: &str) -> Option<(String, String, String, String)> {
+    let t = spec.trim().trim_end_matches('/').trim_end_matches(".git");
+    let t = t.strip_prefix("https://github.com/").or_else(|| t.strip_prefix("github.com/")).unwrap_or(t);
+    let p: Vec<&str> = t.split('/').filter(|x| !x.is_empty()).collect();
+    let ok = |x: &str| !x.is_empty() && x.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    if p.len() < 2 || !ok(p[0]) || !ok(p[1]) || p.iter().any(|x| *x == "..") {
+        return None;
+    }
+    let (r#ref, sub) = if p.get(2) == Some(&"tree") && p.len() > 3 { (p[3].to_string(), p[4..].join("/")) } else { ("HEAD".into(), p[2..].join("/")) };
+    Some((p[0].into(), p[1].into(), r#ref, sub))
+}
+
+/// Unpacks every skill folder (one with a SKILL.md) found under `sub` in a GitHub tar.gz into `dest`.
+/// Returns the names installed. Paths are sanitised; files over 1 MB and very large skills are skipped.
+pub fn install_archive(gz: &[u8], sub: &str, repo: &str, dest: &Path) -> Result<Vec<String>, String> {
+    use std::io::Read;
+    let sub = sub.trim_matches('/');
+    let mut files: Vec<(Vec<String>, Vec<u8>)> = Vec::new();
+    let mut ar = tar::Archive::new(flate2::read::GzDecoder::new(gz));
+    for e in ar.entries().map_err(|e| format!("bad archive: {e}"))?.flatten() {
+        if !e.header().entry_type().is_file() || e.size() > 1_000_000 {
+            continue;
+        }
+        let path = e.path().map_err(|e| e.to_string())?.to_string_lossy().replace('\\', "/");
+        let parts: Vec<String> = path.split('/').skip(1).map(String::from).collect(); // drop "<repo>-<ref>/"
+        if parts.is_empty() || parts.iter().any(|p| p.is_empty() || p == ".." || p.contains(':')) || (!sub.is_empty() && !parts.join("/").starts_with(&format!("{sub}/"))) {
+            continue;
+        }
+        let mut buf = Vec::new();
+        e.take(1_000_000).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        files.push((parts, buf));
+    }
+    let root = sub.split('/').filter(|x| !x.is_empty()).count();
+    let mut names = Vec::new();
+    for (parts, _) in files.iter().filter(|f| f.0.last().map(|n| n == "SKILL.md").unwrap_or(false)) {
+        let dir = &parts[..parts.len() - 1];
+        let name = dir.last().cloned().unwrap_or_else(|| repo.to_string());
+        let name: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || "-_.".contains(*c)).collect();
+        if name.is_empty() || name.starts_with('.') || dir.len() < root {
+            continue;
+        }
+        let (mut total, out) = (0usize, dest.join(&name));
+        let _ = std::fs::remove_dir_all(&out);
+        for (p, data) in files.iter().filter(|f| f.0.len() > dir.len() && f.0[..dir.len()] == *dir) {
+            total += data.len();
+            if total > 5_000_000 {
+                return Err(format!("{name} is larger than 5 MB"));
+            }
+            let target = p[dir.len()..].iter().fold(out.clone(), |a, x| a.join(x));
+            if let Some(d) = target.parent() {
+                std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&target, data).map_err(|e| e.to_string())?;
+        }
+        names.push(name);
+    }
+    if names.is_empty() {
+        return Err("no SKILL.md found there".into());
+    }
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+impl crate::Engine {
+    /// Downloads a skill (or a repo of skills) from GitHub into the skills folder.
+    pub async fn skill_install(&self, spec: &str) -> Result<Vec<String>, String> {
+        let (owner, repo, r, sub) = parse_spec(spec).ok_or("use owner/repo, owner/repo/folder or a GitHub link")?;
+        let url = format!("https://codeload.github.com/{owner}/{repo}/tar.gz/{r}");
+        let res = self.http.get(&url).timeout(std::time::Duration::from_secs(60)).send().await.map_err(|_| "could not reach GitHub")?;
+        if !res.status().is_success() {
+            return Err(format!("GitHub answered {} (is the repo public?)", res.status()));
+        }
+        let bytes = res.bytes().await.map_err(|_| "the download broke")?;
+        if bytes.len() > 40_000_000 {
+            return Err("that repo is too large".into());
+        }
+        install_archive(&bytes, &sub, &repo, &self.home().join("skills"))
+    }
+}
+
+/// Removes an installed skill folder from the data folder.
+pub fn remove(home: &Path, name: &str) -> bool {
+    !name.is_empty() && !name.contains(['/', '\\', '.']) && std::fs::remove_dir_all(home.join("skills").join(name)).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +191,39 @@ mod tests {
         assert!(index(&found).contains("- release: Cut a release") && index(&[]).is_empty());
         assert!(run(&found, "Release").contains("Bump the version") && !run(&found, "release").contains("description:"));
         assert!(run(&found, "nope").starts_with("ERROR: no skill called nope"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn github_specs_parse_and_archives_install_safely() {
+        assert_eq!(parse_spec("anthropics/skills").unwrap(), ("anthropics".into(), "skills".into(), "HEAD".into(), "".into()));
+        assert_eq!(parse_spec("a/b/skills/pdf").unwrap().3, "skills/pdf");
+        assert_eq!(parse_spec("https://github.com/a/b/tree/main/skills/pdf").unwrap(), ("a".into(), "b".into(), "main".into(), "skills/pdf".into()));
+        assert!(parse_spec("nope").is_none() && parse_spec("a/../b").is_none() && parse_spec("a b/c").is_none());
+
+        let mut tb = tar::Builder::new(Vec::new());
+        let mut add = |path: &str, body: &str| {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(body.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tb.append_data(&mut h, path, body.as_bytes()).unwrap();
+        };
+        add("repo-abc/skills/pdf/SKILL.md", "---\nname: pdf\ndescription: Work with PDFs\n---\nSteps");
+        add("repo-abc/skills/pdf/scripts/run.py", "print(1)");
+        add("repo-abc/skills/docx/SKILL.md", "# Docx\nSteps");
+        add("repo-abc/other/SKILL.md", "# Elsewhere");
+        let gz = {
+            use std::io::Write;
+            let mut g = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            g.write_all(&tb.into_inner().unwrap()).unwrap();
+            g.finish().unwrap()
+        };
+        let root = std::env::temp_dir().join(format!("hinoko-inst-{}", crate::model::nid("i")));
+        assert_eq!(install_archive(&gz, "skills", "repo", &root).unwrap(), ["docx", "pdf"], "only the chosen folder is installed");
+        assert!(root.join("pdf/scripts/run.py").is_file() && !root.join("other").exists());
+        assert_eq!(install_archive(&gz, "skills/pdf", "repo", &root.join("two")).unwrap(), ["pdf"]);
+        assert!(install_archive(&gz, "missing", "repo", &root).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 }

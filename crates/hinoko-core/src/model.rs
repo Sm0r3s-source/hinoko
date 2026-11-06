@@ -308,7 +308,10 @@ impl Store {
             return Self::empty();
         };
         match serde_json::from_str::<Store>(&text) {
-            Ok(store) if store.version == VERSION => store,
+            Ok(store) if store.version == VERSION => {
+                let _ = fs::copy(path, path.with_extension("json.bak")); // last good copy from this start
+                store
+            }
             _ => {
                 let _ = fs::rename(path, path.with_extension("json.bad"));
                 Self::empty()

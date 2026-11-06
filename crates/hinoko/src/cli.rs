@@ -19,6 +19,7 @@ hinoko provider add --name N --kind api|cli [--url U --model M --key K --key-env
                     [--cmd C --arg A --arg B ...]
 hinoko provider use <id> | remove <id> | test [id]
 hinoko machine list | add --name N --host H --user U [--port P] [--auto-readonly] | remove <id> | test <id> | key
+hinoko skills list | add <owner/repo[/folder] | github link> | remove <name>
 hinoko path                    print the data folder
 Run only one Hinoko (window or CLI) at a time: they share one state file.
 ";
@@ -46,6 +47,36 @@ pub fn run(args: &[String]) -> i32 {
             println!("{}", engine.home().display());
             0
         }
+        "skills" => match rest.first().map(String::as_str) {
+            Some("add") if rest.len() > 1 => match rt.block_on(engine.skill_install(&rest[1])) {
+                Ok(n) => {
+                    println!("installed: {}", n.join(", "));
+                    0
+                }
+                Err(e) => {
+                    eprintln!("hinoko: {e}");
+                    1
+                }
+            },
+            Some("remove") if rest.len() > 1 => {
+                if hinoko_core::skills::remove(engine.home(), &rest[1]) {
+                    0
+                } else {
+                    eprintln!("hinoko: no installed skill called {}", rest[1]);
+                    1
+                }
+            }
+            None | Some("list") => {
+                for s in hinoko_core::skills::find(None, engine.home()) {
+                    println!("{}\t{}", s.name, s.description);
+                }
+                0
+            }
+            _ => {
+                eprintln!("usage: hinoko skills list | add <owner/repo[/folder]> | remove <name>");
+                2
+            }
+        },
         "bots" => {
             let st = engine.store();
             if st.bots.is_empty() {
