@@ -163,9 +163,12 @@ impl crate::Engine {
     }
 }
 
-/// Removes an installed skill folder from the data folder.
+/// Removes an installed skill (by its name or its folder's name) from the data folder.
 pub fn remove(home: &Path, name: &str) -> bool {
-    !name.is_empty() && !name.contains(['/', '\\', '.']) && std::fs::remove_dir_all(home.join("skills").join(name)).is_ok()
+    let root = home.join("skills");
+    let by_name = find(None, home).into_iter().find(|s| s.name.eq_ignore_ascii_case(name.trim())).and_then(|s| s.file.parent().map(Path::to_path_buf));
+    let folder = by_name.or_else(|| (!name.trim().is_empty() && !name.contains(['/', '\\']) && !name.trim().starts_with('.')).then(|| root.join(name.trim())));
+    folder.is_some_and(|f| f.parent() == Some(root.as_path()) && std::fs::remove_dir_all(f).is_ok())
 }
 
 #[cfg(test)]
@@ -224,6 +227,12 @@ mod tests {
         assert!(root.join("pdf/scripts/run.py").is_file() && !root.join("other").exists());
         assert_eq!(install_archive(&gz, "skills/pdf", "repo", &root.join("two")).unwrap(), ["pdf"]);
         assert!(install_archive(&gz, "missing", "repo", &root).is_err());
+        // removing goes by the skill's name even when its folder is called something else
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("skills/pdf-tools.v2")).unwrap();
+        std::fs::write(home.join("skills/pdf-tools.v2/SKILL.md"), "---\nname: pdf\n---\nx").unwrap();
+        assert!(!remove(&home, "..") && !remove(&home, "nope"));
+        assert!(remove(&home, "pdf") && !home.join("skills/pdf-tools.v2").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -204,6 +204,8 @@ pub struct Appearance {
     /// Use the pixel font (Pixelify Sans) instead of the default soft sans (Inter).
     #[serde(default)]
     pub pixel_font: bool,
+    /// The left sidebar is shown (Ctrl+B or the title-bar button hides it).
+    pub sidebar: bool,
 }
 
 /// Models a command-line agent can be told to use (for the model menu). Claude Code takes aliases.
@@ -279,6 +281,7 @@ impl Appearance {
             monospace_chat: false,
             show_events: true,
             show_computer_panel: true,
+            sidebar: true,
             enter_sends: true,
             pixel,
             pixel_font: false,

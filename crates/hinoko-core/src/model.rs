@@ -260,6 +260,17 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Write through a temporary file, so a crash never leaves half a file behind.
+pub fn write_atomic(path: &Path, body: &[u8]) {
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension("json.tmp");
+    if fs::write(&tmp, body).is_ok() {
+        let _ = fs::rename(&tmp, path);
+    }
+}
+
 pub fn nid(prefix: &str) -> String {
     static N: AtomicU64 = AtomicU64::new(1);
     let n = N.fetch_add(1, Ordering::Relaxed);
@@ -320,15 +331,8 @@ impl Store {
     }
 
     pub fn save(&self, path: &Path) {
-        if let Some(dir) = path.parent() {
-            let _ = fs::create_dir_all(dir);
-        }
-        let Ok(body) = serde_json::to_vec_pretty(self) else {
-            return;
-        };
-        let tmp = path.with_extension("json.tmp");
-        if fs::write(&tmp, body).is_ok() {
-            let _ = fs::rename(&tmp, path);
+        if let Ok(body) = serde_json::to_vec(self) {
+            write_atomic(path, &body);
         }
     }
 

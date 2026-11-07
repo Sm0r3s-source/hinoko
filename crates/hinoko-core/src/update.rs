@@ -64,7 +64,7 @@ async fn latest(http: &reqwest::Client) -> Result<Option<Release>, String> {
 }
 
 async fn download(http: &reqwest::Client, rel: &Release) -> Result<std::path::PathBuf, String> {
-    let mut r = http.get(&rel.url).header("User-Agent", "Hinoko-updater").send().await.map_err(|_| "the download failed")?.error_for_status().map_err(|_| "the download failed")?;
+    let mut r = http.get(&rel.url).header("User-Agent", "Hinoko-updater").timeout(std::time::Duration::from_secs(900)).send().await.map_err(|_| "the download failed")?.error_for_status().map_err(|_| "the download failed")?;
     let path = std::env::temp_dir().join(format!("Hinoko-Setup-{}.exe", rel.tag.trim_start_matches('v')));
     let (mut file, mut hash) = (std::fs::File::create(&path).map_err(|e| e.to_string())?, Sha256::new());
     while let Some(chunk) = r.chunk().await.map_err(|_| "the download broke off")? {

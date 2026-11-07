@@ -43,6 +43,16 @@ fn panel() -> Color32 {
 fn raised() -> Color32 {
     pal().raised
 }
+/// 950 → "950", 206000 → "206k", 1234567 → "1.2M".
+fn short_n(n: u64) -> String {
+    match n {
+        0..=9_999 => n.to_string(),
+        10_000..=999_999 => format!("{}k", n / 1000),
+        _ => format!("{:.1}M", n as f64 / 1e6),
+    }
+}
+
+#[allow(dead_code)]
 fn paper() -> Color32 {
     pal().text
 }
@@ -216,7 +226,8 @@ pub struct HinokoApp {
     theme_text: String,
     theme_msg: String,
     skill_spec: String,
-    sidebar_open: bool,
+    /// developer aid: scroll Settings to Usage once (HINOKO_OPEN=settings-usage)
+    scroll_usage: bool,
     skill_msg: Arc<Mutex<String>>,
     active: Option<String>,
     drafts: HashMap<String, String>,
@@ -387,6 +398,9 @@ pub fn apply_appearance(ctx: &egui::Context, look: &Appearance) {
     v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, mix(bg, text, 0.18));
     v.widgets.inactive.bg_fill = p.raised;
     v.widgets.inactive.weak_bg_fill = p.raised;
+    // window title bars and open menus follow the theme instead of egui's grey
+    v.widgets.open.weak_bg_fill = mix(panel_c, accent, 0.10);
+    v.widgets.open.bg_fill = mix(panel_c, accent, 0.10);
     v.widgets.hovered.weak_bg_fill = mix(p.raised, text, 0.1);
     v.widgets.active.weak_bg_fill = accent.linear_multiply(0.7);
     let r = egui::CornerRadius::same(if look.pixel { 0 } else { look.rounding.round() as u8 });
@@ -475,7 +489,7 @@ impl HinokoApp {
             theme_text: String::new(),
             theme_msg: String::new(),
             skill_spec: String::new(),
-            sidebar_open: true,
+            scroll_usage: false,
             skill_msg: Arc::new(Mutex::new(String::new())),
             active,
             drafts: HashMap::new(),
@@ -513,6 +527,10 @@ impl HinokoApp {
                 app.start_edit(&PRESETS[4]);
             }
             Ok("routines") => app.dialog = Dialog::Routines,
+            Ok("settings-usage") => {
+                app.open_settings();
+                app.scroll_usage = true;
+            }
             Ok("chats") => app.mode = Mode::Chats,
             Ok("md-demo") => {
                 let id = app.engine.new_chat();
@@ -646,6 +664,14 @@ impl HinokoApp {
     // ---- left: roster ----
     /// The window's own title bar: mark and name on the left, controls on the right,
     /// drag anywhere else to move, double-click to maximise.
+    /// Show or hide the sidebar; remembered across restarts.
+    fn toggle_sidebar(&mut self) {
+        let mut s = self.engine.settings();
+        s.appearance.sidebar = !s.appearance.sidebar;
+        self.look.sidebar = s.appearance.sidebar;
+        self.engine.set_settings(s);
+    }
+
     fn titlebar(&mut self, ui: &mut egui::Ui, maximized: bool) {
         let ctx = ui.ctx().clone();
         let rect = ui.max_rect();
@@ -670,11 +696,11 @@ impl HinokoApp {
         let (ic, st) = (egui::Rect::from_center_size(sb.center(), egui::vec2(14.0, 11.0)), egui::Stroke::new(1.3, if sr.hovered() { egui::Color32::WHITE } else { muted() }));
         ui.painter().rect_stroke(ic, 2.0, st, egui::StrokeKind::Middle);
         ui.painter().line_segment([ic.left_top() + egui::vec2(5.0, 0.0), ic.left_bottom() + egui::vec2(5.0, 0.0)], st);
-        if self.sidebar_open {
+        if self.look.sidebar {
             ui.painter().rect_filled(egui::Rect::from_min_max(ic.left_top() + egui::vec2(1.0, 1.0), ic.left_bottom() + egui::vec2(4.5, -1.0)), 0.0, st.color);
         }
         if sr.clicked() {
-            self.sidebar_open = !self.sidebar_open;
+            self.toggle_sidebar();
         }
         // window buttons, right to left: close, maximise, minimise
         let bw = 44.0;
@@ -742,13 +768,7 @@ impl HinokoApp {
             }
         });
         ui.add_space(6.0);
-        let list_h = (ui.available_height() - 120.0).max(60.0);
-        match self.mode {
-            Mode::Bots => self.bot_list(ui, list_h),
-            Mode::Chats => self.chat_list(ui, list_h),
-            Mode::Code => self.code_list(ui, list_h),
-        }
-        ui.add_space(6.0);
+        // the main action first, like other chat apps: New chat / New bot / Open a project
         if self.mode == Mode::Bots {
             if ui.add_sized([ui.available_width(), 32.0], egui::Button::new("+ New bot")).clicked() {
                 self.new_bot = NewBot::default();
@@ -767,7 +787,15 @@ impl HinokoApp {
                 self.dialog = Dialog::Compare;
             }
         }
-        ui.add_space(4.0);
+        ui.add_space(6.0);
+        // the list fills the middle; Routines / Settings stay pinned at the bottom
+        let list_h = (ui.available_height() - 40.0).max(60.0);
+        match self.mode {
+            Mode::Bots => self.bot_list(ui, list_h),
+            Mode::Chats => self.chat_list(ui, list_h),
+            Mode::Code => self.code_list(ui, list_h),
+        }
+        ui.add_space((ui.available_height() - 34.0).max(4.0));
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let w = (ui.available_width() - 12.0 - 30.0) / 2.0;
@@ -806,7 +834,9 @@ impl HinokoApp {
                 let w = ui.available_width();
                 let r = ui
                     .horizontal(|ui| {
-                        let r = ui.add_sized([(w - 36.0).max(40.0), 30.0], egui::Button::selectable(selected, label).truncate());
+                        let bw = (w - 36.0).max(40.0);
+                        // the empty right text grows, so the title sits on the left like other chat apps
+                        let r = ui.add_sized([bw, 30.0], egui::Button::selectable(selected, label).truncate().right_text(""));
                         if ui.add_sized([24.0, 30.0], egui::Button::new(RichText::new("✕").color(muted())).frame(false)).on_hover_text("Delete chat").clicked() {
                             self.pending_delete = Some(id.clone());
                         }
@@ -863,8 +893,11 @@ impl HinokoApp {
                         _ => (muted(), "idle"),
                     }
                 };
-                let text = format!("{name}\n{title} · {label}");
-                let resp = ui.add_sized([ui.available_width(), 46.0], egui::Button::selectable(selected, text).truncate());
+                // two lines (name, then role and status), each cut to the sidebar's width
+                let fit = ((ui.available_width() - 40.0) / 7.5).max(8.0) as usize;
+                let cut = |s: &str| if s.chars().count() > fit { format!("{}…", s.chars().take(fit.saturating_sub(1)).collect::<String>()) } else { s.to_string() };
+                let text = format!("{}\n{}", cut(name), cut(&format!("{title} · {label}")));
+                let resp = ui.add_sized([ui.available_width(), 46.0], egui::Button::selectable(selected, text).wrap_mode(egui::TextWrapMode::Extend).right_text(""));
                 let p = resp.rect.right_center() - egui::vec2(12.0, 0.0);
                 ui.painter().circle_filled(p, 4.0, dot);
                 if resp.clicked() {
@@ -1098,8 +1131,11 @@ impl HinokoApp {
                 let selected = self.active_code.as_deref() == Some(id.as_str());
                 let busy = self.engine.is_code_busy(id);
                 let mark = if waiting_ids.contains(id) { "? " } else if busy { "\u{25cf} " } else { "" };
-                let label = format!("{mark}{}\n{}", title, clip_path(dir, 30));
-                let r = ui.add_sized([ui.available_width(), 44.0], egui::Button::selectable(selected, label).truncate());
+                let fit = ((ui.available_width() - 24.0) / 7.5).max(8.0) as usize;
+                let name = format!("{mark}{title}");
+                let name = if name.chars().count() > fit { format!("{}…", name.chars().take(fit.saturating_sub(1)).collect::<String>()) } else { name };
+                let label = format!("{name}\n{}", clip_path(dir, fit));
+                let r = ui.add_sized([ui.available_width(), 44.0], egui::Button::selectable(selected, label).wrap_mode(egui::TextWrapMode::Extend).right_text(""));
                 if r.clicked() {
                     self.active_code = Some(id.clone());
                     self.stick_bottom = true;
@@ -1139,79 +1175,77 @@ impl HinokoApp {
         let settings = self.engine.settings();
         let using = settings.provider_for(sess.provider.as_deref()).map(|p| (p.name.clone(), p.kind == Kind::Cli));
 
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(RichText::new(&sess.title).size(18.0).strong());
-                ui.label(RichText::new(&sess.dir).color(muted()).small());
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !self.confirm_delete_code {
-                    if ui.button("Remove").on_hover_text("Forget this session. Your files are not touched.").clicked() {
-                        self.confirm_delete_code = true;
-                    }
-                } else {
-                    if ui.button("Yes, remove").clicked() {
-                        self.engine.code_delete(&id);
-                        self.active_code = None;
-                        self.confirm_delete_code = false;
-                    }
-                    if ui.button("Keep").clicked() {
-                        self.confirm_delete_code = false;
-                    }
-                }
-                if ui.selectable_label(self.activity_open, "Activity").on_hover_text("Every file touched and command run in this session").clicked() {
-                    self.activity_open = !self.activity_open;
-                }
-                if ui.add_enabled(!busy, egui::Button::new("Compact")).on_hover_text("Summarize the older messages to free up room for the model").clicked() {
-                    self.engine.compact_code_async(id.clone());
-                }
-                if ui.add_enabled(!busy && self.engine.code_can_undo(&id), egui::Button::new("Undo request")).on_hover_text("Revert every file the last request changed").clicked() {
-                    if let Err(e) = self.engine.code_undo_run(&id) {
-                        self.toast = e;
-                    }
-                }
-                if ui.add_enabled(!busy && self.engine.code_can_undo(&id), egui::Button::new("Undo step")).on_hover_text("Revert only the newest change").clicked() {
-                    if let Err(e) = self.engine.code_undo(&id) {
-                        self.toast = e;
-                    }
-                }
-                let mut changed = false;
-                let mut s2 = sess.clone();
-                let label = match s2.autonomy.as_str() {
-                    "all" => "Auto-run everything",
-                    "edits" => "Auto-accept edits",
-                    _ => "Ask before changes",
-                };
-                egui::ComboBox::from_id_salt(("autonomy", &id)).selected_text(label).show_ui(ui, |ui| {
-                    changed |= ui.selectable_value(&mut s2.autonomy, "ask".into(), "Ask before changes").changed();
-                    changed |= ui.selectable_value(&mut s2.autonomy, "edits".into(), "Auto-accept edits (commands still ask)").changed();
-                    changed |= ui.selectable_value(&mut s2.autonomy, "all".into(), "Auto-run everything (careful)").changed();
-                });
-                ui.add_space(4.0);
-                for (m, name) in [("build", "Build"), ("plan", "Plan")] {
-                    if ui.selectable_label(s2.mode == m, name).on_hover_text(if m == "plan" { "Read-only: explore the code and make a plan" } else { "Can edit files and run commands, with your OK" }).clicked() {
-                        s2.mode = m.into();
-                        changed = true;
-                    }
-                }
-                ui.add_space(4.0);
-                let current = using.as_ref().map(|u| u.0.clone()).unwrap_or_else(|| "no model".into());
-                egui::ComboBox::from_id_salt(("code-model", &id)).selected_text(current).show_ui(ui, |ui| {
-                    changed |= ui.selectable_value(&mut s2.provider, None, "Desk default").changed();
-                    for p in &settings.providers {
-                        changed |= ui.selectable_value(&mut s2.provider, Some(p.id.clone()), &p.name).changed();
-                    }
-                });
-                self.cli_model_picker(ui, &id, s2.provider.as_deref());
-                if changed {
-                    if let Some(c) = self.engine.store().code_mut(&id) {
-                        c.provider = s2.provider;
-                        c.mode = s2.mode;
-                        c.autonomy = s2.autonomy;
-                    }
-                    self.engine.save();
+        // title on its own line; the controls below wrap when the window is narrow, so they never cover it
+        ui.add(egui::Label::new(RichText::new(&sess.title).size(18.0).strong()).truncate());
+        ui.add(egui::Label::new(RichText::new(&sess.dir).color(muted()).small()).truncate());
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            let mut changed = false;
+            let mut s2 = sess.clone();
+            let current = using.as_ref().map(|u| u.0.clone()).unwrap_or_else(|| "no model".into());
+            egui::ComboBox::from_id_salt(("code-model", &id)).selected_text(current).show_ui(ui, |ui| {
+                changed |= ui.selectable_value(&mut s2.provider, None, "Desk default").changed();
+                for p in &settings.providers {
+                    changed |= ui.selectable_value(&mut s2.provider, Some(p.id.clone()), &p.name).changed();
                 }
             });
+            self.cli_model_picker(ui, &id, s2.provider.as_deref());
+            ui.add_space(4.0);
+            for (m, name) in [("plan", "Plan"), ("build", "Build")] {
+                if ui.selectable_label(s2.mode == m, name).on_hover_text(if m == "plan" { "Read-only: explore the code and make a plan" } else { "Can edit files and run commands, with your OK" }).clicked() {
+                    s2.mode = m.into();
+                    changed = true;
+                }
+            }
+            ui.add_space(4.0);
+            let label = match s2.autonomy.as_str() {
+                "all" => "Auto-run everything",
+                "edits" => "Auto-accept edits",
+                _ => "Ask before changes",
+            };
+            egui::ComboBox::from_id_salt(("autonomy", &id)).selected_text(label).show_ui(ui, |ui| {
+                changed |= ui.selectable_value(&mut s2.autonomy, "ask".into(), "Ask before changes").changed();
+                changed |= ui.selectable_value(&mut s2.autonomy, "edits".into(), "Auto-accept edits (commands still ask)").changed();
+                changed |= ui.selectable_value(&mut s2.autonomy, "all".into(), "Auto-run everything (careful)").changed();
+            });
+            if ui.add_enabled(!busy && self.engine.code_can_undo(&id), egui::Button::new("Undo step")).on_hover_text("Revert only the newest change").clicked() {
+                if let Err(e) = self.engine.code_undo(&id) {
+                    self.toast = e;
+                }
+            }
+            if ui.add_enabled(!busy && self.engine.code_can_undo(&id), egui::Button::new("Undo request")).on_hover_text("Revert every file the last request changed").clicked() {
+                if let Err(e) = self.engine.code_undo_run(&id) {
+                    self.toast = e;
+                }
+            }
+            if ui.add_enabled(!busy, egui::Button::new("Compact")).on_hover_text("Summarize the older messages to free up room for the model").clicked() {
+                self.engine.compact_code_async(id.clone());
+            }
+            if ui.selectable_label(self.activity_open, "Activity").on_hover_text("Every file touched and command run in this session").clicked() {
+                self.activity_open = !self.activity_open;
+            }
+            if !self.confirm_delete_code {
+                if ui.button("Remove").on_hover_text("Forget this session. Your files are not touched.").clicked() {
+                    self.confirm_delete_code = true;
+                }
+            } else {
+                if ui.button("Keep").clicked() {
+                    self.confirm_delete_code = false;
+                }
+                if ui.button("Yes, remove").clicked() {
+                    self.engine.code_delete(&id);
+                    self.active_code = None;
+                    self.confirm_delete_code = false;
+                }
+            }
+            if changed {
+                if let Some(c) = self.engine.store().code_mut(&id) {
+                    c.provider = s2.provider;
+                    c.mode = s2.mode;
+                    c.autonomy = s2.autonomy;
+                }
+                self.engine.save();
+            }
         });
         if let Some(g) = self.git_status(&sess.dir, busy) {
             ui.horizontal(|ui| {
@@ -1302,8 +1336,17 @@ impl HinokoApp {
                                                 if ui.add(egui::Button::new("Allow").fill(ember())).clicked() {
                                                     decide = Some((a.clone(), 1));
                                                 }
-                                                let always = if m.text.starts_with("Run:") { "Always allow this command" } else { "Allow all edits" };
-                                                if ui.button(always).clicked() {
+                                                // what "always" means depends on the request; reading a secret file asks every time
+                                                let always = if m.text.starts_with("Run:") {
+                                                    Some("Always allow this command")
+                                                } else if m.text.starts_with("Open ") {
+                                                    Some("Always allow this site")
+                                                } else if m.text.starts_with("Read ") {
+                                                    None
+                                                } else {
+                                                    Some("Allow all edits")
+                                                };
+                                                if always.is_some_and(|t| ui.button(t).clicked()) {
                                                     decide = Some((a.clone(), 2));
                                                 }
                                                 if ui.button("Deny").clicked() {
@@ -2779,7 +2822,10 @@ impl HinokoApp {
                 self.update_section(ui, &mut s.auto_update_check);
 
                 ui.separator();
-                ui.label(RichText::new("Usage").size(16.0).strong());
+                let r = ui.label(RichText::new("Usage").size(16.0).strong());
+                if std::mem::take(&mut self.scroll_usage) {
+                    r.scroll_to_me(Some(egui::Align::TOP));
+                }
                 self.usage_section(ui, &s);
 
                 ui.separator();
@@ -3026,7 +3072,7 @@ impl HinokoApp {
     fn usage_section(&mut self, ui: &mut egui::Ui, s: &hinoko_core::settings::Settings) {
         use hinoko_core::usage;
         let rows = usage::all();
-        ui.label(RichText::new("Counted on this computer. Tokens are the server's numbers when it reports them, otherwise an estimate; command-line agents are estimated.").color(muted()).small());
+        ui.label(RichText::new("Counted on this computer. Tokens are the server's numbers when it reports them, otherwise an estimate. Claude Code reports its exact tokens and cost; other command-line agents are estimated.").color(muted()).small());
         for (label, n) in [("Today", 1), ("7 days", 7), ("30 days", 30)] {
             let from = usage::since(n);
             let mut by: std::collections::BTreeMap<String, usage::Row> = Default::default();
@@ -3042,14 +3088,14 @@ impl HinokoApp {
                 dollars += usage::cost(r, pi, po);
                 total.add(r);
             }
-            egui::CollapsingHeader::new(format!("{label}: {} calls, {} in, {} out, about ${dollars:.2}", total.calls, total.prompt, total.completion)).id_salt(("usage", n)).show(ui, |ui| {
+            egui::CollapsingHeader::new(format!("{label}: {} calls, {} in, {} out, about ${dollars:.2}", total.calls, short_n(total.prompt), short_n(total.completion))).id_salt(("usage", n)).show(ui, |ui| {
                 if by.is_empty() {
                     ui.label(RichText::new("Nothing yet.").color(muted()));
                 }
                 for (k, r) in &by {
                     let (pid, model) = k.split_once('\u{1}').unwrap_or(("", k));
                     let (pi, po) = s.provider(pid).map(|p| (p.price_in, p.price_out)).unwrap_or((0.0, 0.0));
-                    ui.label(format!("{model}: {} calls, {} in ({} cached), {} out, ${:.3}", r.calls, r.prompt, r.cached, r.completion, usage::cost(r, pi, po)));
+                    ui.label(format!("{model}: {} calls, {} in ({} cached), {} out, ${:.3}", r.calls, short_n(r.prompt), short_n(r.cached), short_n(r.completion), usage::cost(r, pi, po)));
                 }
             });
         }
@@ -3185,9 +3231,9 @@ impl eframe::App for HinokoApp {
             .frame(egui::Frame::new().fill(mix(ink(), Color32::BLACK, 0.4)))
             .show(ui, |ui| self.titlebar(ui, maximized));
         if ctx0.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
-            self.sidebar_open = !self.sidebar_open;
+            self.toggle_sidebar();
         }
-        if self.sidebar_open {
+        if self.look.sidebar {
             egui::Panel::left("roster").default_size(230.0).size_range(150.0..=560.0).resizable(true).frame(egui::Frame::new().fill(panel()).inner_margin(12.0)).show(ui, |ui| self.roster(ui));
         }
         if self.mode == Mode::Bots && self.look.show_computer_panel {

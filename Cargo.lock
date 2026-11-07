@@ -3125,7 +3125,7 @@ dependencies = [
 
 [[package]]
 name = "hinoko"
-version = "0.15.3"
+version = "0.15.4"
 dependencies = [
  "base64 0.22.1",
  "eframe",
@@ -3139,7 +3139,7 @@ dependencies = [
 
 [[package]]
 name = "hinoko-core"
-version = "0.15.3"
+version = "0.15.4"
 dependencies = [
  "axum",
  "dirs",

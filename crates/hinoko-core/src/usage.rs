@@ -9,11 +9,14 @@ pub struct Row {
     pub prompt: u64,
     pub completion: u64,
     pub cached: u64,
+    /// Dollars the provider itself reported (Claude Code does); 0 = estimate from prices.
+    #[serde(default)]
+    pub cost: f64,
 }
 
 impl Row {
     pub fn add(&mut self, o: &Row) {
-        (self.calls, self.prompt, self.completion, self.cached) = (self.calls + o.calls, self.prompt + o.prompt, self.completion + o.completion, self.cached + o.cached);
+        (self.calls, self.prompt, self.completion, self.cached, self.cost) = (self.calls + o.calls, self.prompt + o.prompt, self.completion + o.completion, self.cached + o.cached, self.cost + o.cost);
     }
 }
 
@@ -39,7 +42,12 @@ pub fn since(n: i64) -> String {
 
 /// Counts one model call. `prompt` and `completion` are the server's numbers when it gave them.
 pub fn record(provider: &str, model: &str, prompt: u64, completion: u64, cached: u64) {
-    rows().entry(format!("{}|{provider}|{model}", day())).or_default().add(&Row { calls: 1, prompt, completion, cached });
+    record_cost(provider, model, prompt, completion, cached, 0.0);
+}
+
+/// Like [`record`], with the dollars the provider reported for the call.
+pub fn record_cost(provider: &str, model: &str, prompt: u64, completion: u64, cached: u64, cost: f64) {
+    rows().entry(format!("{}|{provider}|{model}", day())).or_default().add(&Row { calls: 1, prompt, completion, cached, cost });
     DIRTY.store(true, Ordering::Relaxed);
 }
 
@@ -70,9 +78,9 @@ pub fn save(path: &Path) {
     }
 }
 
-/// Estimated cost in dollars from prices per million tokens.
+/// Cost in dollars: what the provider reported, otherwise an estimate from prices per million tokens.
 pub fn cost(r: &Row, price_in: f64, price_out: f64) -> f64 {
-    (r.prompt as f64 * price_in + r.completion as f64 * price_out) / 1e6
+    if r.cost > 0.0 { r.cost } else { (r.prompt as f64 * price_in + r.completion as f64 * price_out) / 1e6 }
 }
 
 /// What the server said it used: (prompt tokens, completion tokens, cached prompt tokens).
@@ -101,6 +109,9 @@ mod tests {
         assert_eq!((m1.calls, m1.prompt, m1.completion, m1.cached), (2, 1500, 300, 800));
         assert_eq!(mine.len(), 2, "each model has its own row");
         assert!((cost(m1, 3.0, 15.0) - 0.009).abs() < 1e-9, "1500 in at $3 and 300 out at $15 per million");
+        record_cost("unit-test", "cli", 10, 5, 0, 0.25);
+        let cli = all().into_iter().find(|r| r.1 == "unit-test" && r.2 == "cli").unwrap().3;
+        assert_eq!(cost(&cli, 3.0, 15.0), 0.25, "a reported cost wins over the price estimate");
         assert_eq!(read(&serde_json::json!({"prompt_tokens": 9, "completion_tokens": 4, "prompt_tokens_details": {"cached_tokens": 2}})), Some((9, 4, 2)));
         assert_eq!(read(&serde_json::json!({})), None);
         let _ = std::fs::remove_dir_all(dir);

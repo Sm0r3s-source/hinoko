@@ -2,7 +2,7 @@
 
 A native desktop AI workspace in pure Rust (egui). Plain **chats**, **deep research**, and persistent **bots**
 (own computer, memory, routines, approvals) in one app, with any model: OpenAI-compatible APIs, local servers, or CLI agents.
-Crimson by default; sakura, ember, paper, midnight, forest, mono, kojo and fully custom themes in Settings. The default font is Inter (soft, professional). Two optional pixel-art looks: the **Pixel / Pixel Sakura** themes (or *Pixel art interface* in Settings → Appearance) give the whole UI notched pixel corners, hard borders, hard drop shadows and a pixel flame logo, and *Pixel font* switches the text to Pixelify Sans. They are independent, so you can have either or both. Fonts: Inter and Pixelify Sans, SIL Open Font License (`assets/fonts`).
+Astral (deep-space indigo) by default; Pixel Astral, crimson, sakura, kojo and fully custom themes in Settings. The default font is Inter (soft, professional). Two optional pixel-art looks: the **Pixel** themes (or *Pixel art interface* in Settings → Appearance) give the whole UI notched pixel corners, hard borders and hard drop shadows, and *Pixel font* switches the text to Pixelify Sans. They are independent, so you can have either or both. Fonts: Inter and Pixelify Sans, SIL Open Font License (`assets/fonts`).
 
 ## Install as an app
 
@@ -13,8 +13,7 @@ Crimson by default; sakura, ember, paper, midnight, forest, mono, kojo and fully
 | macOS | `cargo build --release`, drag `target/release/hinoko` anywhere | Double-click to open |
 
 Needs Rust (https://rustup.rs). Windows also needs the Visual Studio C++ Build Tools (rustup offers them).
-Push to GitHub and tag `v0.4.0`: `.github/workflows/release.yml` builds a real **Hinoko-Setup.exe** (Inno Setup, per-user, no admin) plus Linux/macOS binaries and attaches them to the release. Run it by hand from the Actions tab too. You never need to compile locally.
-The Windows build is untested by me (built and tested on Linux only).
+Or download **Hinoko-Setup.exe** (Windows, per-user, no admin) or the Linux/macOS binary from the [Releases](https://github.com/Sm0r3s-source/hinoko/releases) page; installed copies update themselves (Settings → Updates).
 
 ## First launch
 
@@ -43,9 +42,12 @@ No premade bots. Keys can be read from an environment variable instead of stored
 - **Standing rules (bots):** on a bot's approval card, *Always allow this* / *Always deny this* saves a rule for that exact command or file and bot. From then on that request is answered for you, with a line in the chat saying so. Rules are listed (and removed) in Settings → Bots: attention, a deny rule beats an allow rule, a bot can never make rules itself.
 - **Quiet routines:** a routine that finds nothing new leaves one muted line ("Checked · name · nothing to report") instead of a message, so bots only speak when there is something for you. Switch it off in Settings → Bots: attention.
 - **Parallel Code sessions:** open several projects and let them all work at once, each with its own model. The sidebar marks the ones working (●) and the ones waiting for you (?), with a *Stop all* button.
-- **Usage meter and skills: Settings → Usage shows calls, tokens and estimated cost per model; skills are SKILL.md folders the Code agent loads on demand.
-- Lean on tokens:** long command, search and web output is shrunk to what matters (start, end, every error line, repeats collapsed; JSON arrays become a sample and a count); file reads are never cut. In Code, old tool results that were superseded (a file read again) or are far back are replaced by a short stub once that frees a lot of room, the last two rounds are always kept, and rarely used tools (web search and read, find files) are only listed until the model asks for them with `tool_search` (local models keep every tool). A model that repeats the same call or fails three times in a row is nudged, then stopped. llama.cpp keeps its prompt cache, and Claude through OpenRouter gets a cache marker on the system prompt.
+- **Usage:** Settings → Usage shows calls, tokens (in, cached, out) and cost per model for today, 7 and 30 days. Enter a model's price per million tokens in its settings for a cost estimate; Claude Code reports its exact tokens and cost.
+- **Skills:** folders with a `SKILL.md` (name, description, instructions; the same format Claude uses). The Code agent sees only the list and loads a skill when the task matches. Install one with `hinoko skills add owner/repo[/folder]` or the box in Settings → Skills; project skills in `.hinoko/skills` or `.claude/skills` are read too.
+- **Sidebar:** drag its edge to resize, or hide it with the button in the title bar (Ctrl+B).
+- **Lean on tokens:** long command, search and web output is shrunk to what matters (start, end, every error line, repeats collapsed; JSON arrays become a sample and a count); file reads are never cut. In Code, old tool results that were superseded (a file read again) or are far back are replaced by a short stub once that frees a lot of room, the last two rounds are always kept, and rarely used tools (web search and read, find files) are only listed until the model asks for them with `tool_search` (local models keep every tool). A model that repeats the same call or fails three times in a row is nudged, then stopped. llama.cpp keeps its prompt cache, and Claude through OpenRouter gets a cache marker on the system prompt.
 - **Updates:** Settings → Updates checks GitHub for a newer release (also when Hinoko starts, if you leave that on). *Download and install* fetches `Hinoko-Setup.exe`, checks its SHA-256, closes Hinoko, updates it and opens it again; your chats, bots and settings stay. To publish a version: bump `version` in `Cargo.toml`, run `.\release.ps1` (commit, tag `vX.Y.Z`, push); the CI builds the installer and creates the release. The repo is set in `crates/hinoko-core/src/update.rs`.
+- **Long conversations stay usable:** when a chat or coding session outgrows what the model can read (about 20k tokens, 5k for the built-in local model; change it in Settings → Limits), Hinoko has the model summarize the older part and sends only the summary plus the recent messages. Nothing is deleted. *Chat options → Compact now* and the *Compact* button in Code do it on demand.
 - **Run traces:** Settings → Limits → *Write run traces* saves every model call and tool run as JSON lines under `traces/` in the data folder. Off by default.
 - **Customize:** themes, accent/background, UI scale, spacing, rounding, chat width, Enter-to-send, global instructions.
 
@@ -56,6 +58,7 @@ hinoko bots | new <name> <role> <mandate...>   hinoko run <bot> <prompt...> [--j
 hinoko approvals | approve <id> | deny <id>
 hinoko provider list | add ... | use <id> | remove <id> | test [id]
 hinoko machine list | add --name N --host H --user U [--port P] [--auto-readonly] | remove <id> | test <id> | key
+hinoko skills list | add <owner/repo[/folder] | GitHub link> | remove <name>
 hinoko path
 ```
 Run only one Hinoko (window or CLI) at a time; they share one state file.
@@ -64,6 +67,7 @@ Run only one Hinoko (window or CLI) at a time; they share one state file.
 
 - Bot shell is a simulation in memory; it never touches your PC. SSH is the only way out, and it asks.
 - Page reads: https, public addresses only (checked at connect time), tool output fenced as untrusted.
+- Code agent: stays inside the project folder; commands it runs don't get environment variables that look like keys or tokens; files that usually hold secrets (`.env`, `*.pem`, `id_*`, `credentials`…) are skipped by search and ask before being read; it opens only links you gave or that came from its web search, anything else asks.
 - Model calls capped per rolling hour (default 60; plain chats exempt). CLI agents run outside the sandbox with your account's permissions.
 - Data: `%APPDATA%\Hinoko` / `~/.local/share/Hinoko` / `~/Library/Application Support/Hinoko` (override `HINOKO_HOME`). `settings.json` holds keys, owner-only on Linux/macOS.
 
@@ -71,8 +75,6 @@ Run only one Hinoko (window or CLI) at a time; they share one state file.
 
 `crates/hinoko-core` engine + tests. `crates/hinoko` window + CLI. `assets/` icon (`packaging/make_icon.py` regenerates it).
 
-
-- **Long conversations stay usable:** when a chat or coding session outgrows what the model can read (about 20k tokens, 5k for the built-in local model; change it in Settings → Limits), Hinoko has the model summarize the older part and sends only the summary plus the recent messages. Nothing is deleted. *Chat options → Compact now* and the *Compact* button in Code do it on demand.
 
 ## Credits
 

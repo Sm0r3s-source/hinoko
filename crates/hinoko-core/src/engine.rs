@@ -145,6 +145,7 @@ pub struct Engine {
     pub(crate) repaint: Arc<dyn Fn() + Send + Sync>,
     pub(crate) local: Arc<crate::local::LocalState>,
     pub(crate) code: Arc<crate::code::CodeState>,
+    saving: Arc<Mutex<()>>,
 }
 
 /// Keeps one turn per bot at a time.
@@ -168,7 +169,8 @@ impl Engine {
         let store = Store::load(&paths.state());
         let settings = Settings::load(&paths.settings());
         let http = reqwest::Client::builder()
-            .user_agent("Hinoko/0.3")
+            .user_agent(concat!("Hinoko/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(std::time::Duration::from_secs(20))
             .build()
             .map_err(|e| e.to_string())?;
         crate::usage::load(&paths.usage());
@@ -185,6 +187,7 @@ impl Engine {
             repaint,
             local: Arc::new(crate::local::LocalState::default()),
             code: Arc::new(crate::code::CodeState::default()),
+            saving: Arc::new(Mutex::new(())),
         })
     }
 
@@ -204,7 +207,13 @@ impl Engine {
     }
 
     pub fn save(&self) {
-        self.store().save(&self.paths.state());
+        // one save at a time, in order; the store lock is held only while copying it out,
+        // so the window never waits for the disk
+        let _order = self.saving.lock().unwrap_or_else(|e| e.into_inner());
+        let body = serde_json::to_vec(&*self.store());
+        if let Ok(body) = body {
+            crate::model::write_atomic(&self.paths.state(), &body);
+        }
         crate::usage::save(&self.paths.usage());
         (self.repaint)();
     }

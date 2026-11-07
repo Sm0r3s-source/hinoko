@@ -93,7 +93,6 @@ pub async fn complete(
         Kind::Cli => {
             let prompt = render_prompt(&to_prompted(messages, tools));
             let text = run_cli(p, &prompt).await?;
-            meter(p, messages, None, text.len());
             Ok(from_prompted(&text))
         }
     }
@@ -314,7 +313,6 @@ pub async fn stream(
     }
     if p.kind == Kind::Cli {
         let text = run_cli(p, &render_prompt(messages)).await?;
-        meter(p, messages, None, text.len());
         on_delta(Piece::Text(&text));
         return Ok(text);
     }
@@ -591,7 +589,12 @@ pub fn render_prompt(messages: &[Value]) -> String {
 
 async fn run_cli(p: &Provider, prompt: &str) -> Result<String, LlmError> {
     let in_arg = p.args.iter().any(|a| a.contains("{prompt}"));
-    let args: Vec<String> = crate::settings::cli_model_args(&p.command, &p.model).into_iter().chain(p.args.iter().map(|a| a.replace("{prompt}", prompt))).collect();
+    let mut args: Vec<String> = crate::settings::cli_model_args(&p.command, &p.model).into_iter().chain(p.args.iter().map(|a| a.replace("{prompt}", prompt))).collect();
+    // Claude Code reports its exact tokens and cost when asked for JSON
+    let json_out = !crate::settings::cli_models(&p.command).is_empty() && !args.iter().any(|a| a.starts_with("--output-format"));
+    if json_out {
+        args.extend(["--output-format".to_string(), "json".to_string()]);
+    }
     let work = std::env::temp_dir().join("hinoko-cli");
     let _ = std::fs::create_dir_all(&work);
 
@@ -637,7 +640,38 @@ async fn run_cli(p: &Provider, prompt: &str) -> Result<String, LlmError> {
     if text.is_empty() {
         return Err(fail("the CLI agent printed nothing", false));
     }
-    Ok(text)
+    match json_out.then(|| cli_json(&text)).flatten() {
+        Some((answer, usage, cost, is_error)) => {
+            crate::usage::record_cost(&p.id, cli_model_name(p), usage.0, usage.1, usage.2, cost);
+            if is_error {
+                return Err(fail(format!("CLI agent: {}", clip_chars(&answer, 200)), false));
+            }
+            Ok(answer)
+        }
+        None => {
+            crate::usage::record(&p.id, cli_model_name(p), estimate_tokens(prompt.len()), estimate_tokens(text.len()), 0);
+            Ok(text)
+        }
+    }
+}
+
+fn cli_model_name(p: &Provider) -> &str {
+    if p.model.trim().is_empty() { "default" } else { p.model.trim() }
+}
+
+fn clip_chars(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+/// Claude Code's `--output-format json` result: (answer, (prompt, output, cached) tokens, dollars, is_error).
+pub fn cli_json(out: &str) -> Option<(String, (u64, u64, u64), f64, bool)> {
+    let v: Value = serde_json::from_str(out.lines().rev().find(|l| l.trim_start().starts_with('{'))?.trim()).ok()?;
+    let answer = v["result"].as_str()?.trim().to_string();
+    let u = &v["usage"];
+    let n = |k: &str| u[k].as_u64().unwrap_or(0);
+    let cached = n("cache_read_input_tokens");
+    let prompt = n("input_tokens") + n("cache_creation_input_tokens") + cached;
+    Some((answer, (prompt, n("output_tokens"), cached), v["total_cost_usd"].as_f64().unwrap_or(0.0), v["is_error"].as_bool().unwrap_or(false)))
 }
 
 /// Error text when a model used its whole reply budget thinking.
@@ -949,6 +983,9 @@ mod tests {
     #[test]
     fn usage_and_speed_lines() {
         assert_eq!(parse_sse_line(r#"data: {"choices":[],"usage":{"completion_tokens":42}}"#), Sse::Usage(42));
+        let j = r#"{"type":"result","is_error":false,"result":" Hi there ","total_cost_usd":0.0125,"usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":900,"output_tokens":7}}"#;
+        assert_eq!(cli_json(j), Some(("Hi there".to_string(), (1010, 7, 900), 0.0125, false)));
+        assert!(cli_json("plain text answer").is_none());
         assert_eq!(parse_completion(r#"{"choices":[{"message":{"content":"x"}}],"usage":{"completion_tokens":7}}"#).unwrap().tokens, Some(7));
         assert_eq!(estimate_tokens(360), 100);
         // 100 tokens, first piece after 1s, finished at 3s: 50 tok/s while writing
